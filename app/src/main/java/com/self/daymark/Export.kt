@@ -1,24 +1,36 @@
 package com.self.daymark
 
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
+import com.google.gson.JsonParser
 import java.io.*
 import java.time.*
 import java.util.zip.*
 
-data class Backup(val schemaVersion: Int = 2, val app: String = "Daymark", val exportedAt: String = Instant.now().toString(), val zone: String = ZoneId.systemDefault().id, val data: LedgerData)
+data class Backup(val schemaVersion: Int = 3, val app: String = "Daymark", val exportedAt: String = Instant.now().toString(), val zone: String = ZoneId.systemDefault().id, val data: LedgerData)
 
 object Export {
     private val gson = GsonBuilder().setPrettyPrinting().serializeNulls().disableHtmlEscaping().create()
     fun json(data: LedgerData) = gson.toJson(Backup(data = data))
     fun fromJson(text: String): LedgerData {
-        val backup = gson.fromJson(text, Backup::class.java)
-        require(backup.schemaVersion in 1..2 && backup.app == "Daymark") { "不是支持的事记备份（版本 1 或 2）" }
-        val data = if (backup.schemaVersion == 1) ExperienceScale.upgradeLegacy(backup.data) else backup.data
+        val tree = JsonParser.parseString(text).asJsonObject
+        val version = tree.get("schemaVersion").asInt
+        require(version in 1..3 && tree.get("app").asString == "Daymark") { "不是支持的事记备份（版本 1–3）" }
+        if (version < 3) tree.getAsJsonObject("data").add("plans", JsonArray())
+        val backup = gson.fromJson(tree, Backup::class.java)
+        var data = if (backup.schemaVersion == 1) ExperienceScale.upgradeLegacy(backup.data) else backup.data
+        if (version < 3) data = data.copy(plans = data.activeEvents.filter { it.status == "planned" }.map { e ->
+            val local = Instant.ofEpochMilli(e.startAt).atZone(ZoneId.systemDefault())
+            Plan(id = "legacy-${e.id}", title = e.title, notes = e.notes, day = local.toLocalDate().toString(),
+                startMinute = local.hour * 60 + local.minute, expectedMinutes = data.latestForecast(e.id)?.minutes,
+                createdAt = e.createdAt, updatedAt = e.updatedAt)
+        })
         validate(data)
         return data
     }
     fun validate(data: LedgerData) {
-        require(data.events.size + data.cash.size + data.forecasts.size <= 100000) { "单次恢复记录过多" }
+        require(data.events.size + data.cash.size + data.forecasts.size + data.plans.size <= 100000) { "单次恢复记录过多" }
+        uniquePlans(data)
         fun unique(ids: List<String>) = require(ids.all { it.isNotBlank() } && ids.distinct().size == ids.size) { "备份包含重复或缺失的编号" }
         unique(data.events.map { it.id }); unique(data.cash.map { it.id }); unique(data.sleeps.map { it.day }); unique(data.forecasts.map { it.id })
         unique(data.resolutions.map { it.forecastId }); unique(data.balances.map { it.id }); unique(data.checks.map { it.day })
@@ -29,6 +41,20 @@ object Export {
         data.activeEvents.forEach { e -> require(e.costKnown == data.cash.any { it.eventId == e.id }) { "事件费用状态与流水不一致" } }
         data.balances.forEach { require(kotlin.math.abs(it.cents.toDouble()) <= 1e12) { "余额超出范围" } }
         data.checks.forEach { LocalDate.parse(it.day); require(data.sleeps.any { s -> s.day == it.day }) { "已确认日期缺少睡眠确认" } }
+    }
+    private fun uniquePlans(data: LedgerData) {
+        require(data.plans.map { it.id }.distinct().size == data.plans.size) { "计划编号重复" }
+        val links = data.plans.mapNotNull { it.eventId }
+        require(links.distinct().size == links.size) { "计划关联记录重复" }
+        data.plans.forEach { p ->
+            p.validate()
+            if (p.eventId != null) {
+                val event = data.events.find { it.id == p.eventId }
+                require(event != null && event.status == "done") { "计划的实际记录缺失" }
+                require((p.completedAt != null) == (event.deletedAt == null)) { "计划完成状态不一致" }
+                require(p.completedAt == null || p.savedCostCents == null) { "计划费用状态不一致" }
+            }
+        }
     }
     fun csv(headers: List<String>, rows: List<List<Any?>>): String {
         fun cell(value: Any?): String {
@@ -44,7 +70,9 @@ object Export {
         ZipOutputStream(BufferedOutputStream(output)).use { zip ->
             fun put(name: String, text: String) { zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray(Charsets.UTF_8)); zip.closeEntry() }
             put("records.json", json(data))
-            put("events.csv", csv(listOf("id","title","category","start_at","end_at","status","description","experience","feeling","worth","cost_known","actual_cost_cents","created_at","updated_at","first_outcome_at","deleted_at"), data.events.map { e -> listOf(e.id,e.title,e.category,Time.iso(e.startAt),e.endAt?.let(Time::iso),e.status,e.description,e.experience,e.feeling,e.worth,e.costKnown,data.cost(e),Time.iso(e.createdAt),Time.iso(e.updatedAt),e.firstOutcomeAt?.let(Time::iso),e.deletedAt?.let(Time::iso)) }))
+            put("plans.csv", csv(listOf("id","title","notes","day","period","start_minute","expected_minutes","event_id","completed_at","saved_cost_cents","created_at","updated_at","deleted_at"), data.plans.map { listOf(it.id,it.title,it.notes,it.day,it.period,it.startMinute,it.expectedMinutes,it.eventId,it.completedAt?.let(Time::iso),it.savedCostCents,Time.iso(it.createdAt),Time.iso(it.updatedAt),it.deletedAt?.let(Time::iso)) }))
+            put("plan_durations.csv", csv(listOf("plan_id","event_id","expected_minutes","actual_minutes","actual_minus_expected_minutes"), data.activePlans.filter { it.completedAt != null }.map { p -> val actual=data.events.find { it.id == p.eventId }?.durationMinutes; listOf(p.id,p.eventId,p.expectedMinutes,actual,if(actual!=null&&p.expectedMinutes!=null)actual-p.expectedMinutes else null) }))
+            put("events.csv", csv(listOf("id","title","category","start_at","end_at","status","description","experience","feeling","worth","cost_known","actual_cost_cents","created_at","updated_at","first_outcome_at","deleted_at","actual_minutes","duration_minutes"), data.events.map { e -> listOf(e.id,e.title,e.category,Time.iso(e.startAt),e.endAt?.let(Time::iso),e.status,e.description,e.experience,e.feeling,e.worth,e.costKnown,data.cost(e),Time.iso(e.createdAt),Time.iso(e.updatedAt),e.firstOutcomeAt?.let(Time::iso),e.deletedAt?.let(Time::iso),e.actualMinutes,e.durationMinutes) }))
             put("cash.csv", csv(listOf("id","event_id","title","signed_cents","kind","occurred_at","created_at","updated_at"), data.cash.map { listOf(it.id,it.eventId,it.title,it.cents,it.kind,Time.iso(it.occurredAt),Time.iso(it.createdAt),Time.iso(it.updatedAt)) }))
             put("sleep.csv", csv(listOf("wake_day","status","start_at","end_at","note","updated_at"), data.sleeps.map { listOf(it.day,it.status,it.startAt?.let(Time::iso),it.endAt?.let(Time::iso),it.note,Time.iso(it.updatedAt)) }))
             put("forecasts.csv", csv(listOf("id","event_id","made_at","expected_minutes","expected_cost_cents","expected_feeling","question","probability_percent","deadline_at","basis","prospective"), data.forecasts.map { listOf(it.id,it.eventId,Time.iso(it.madeAt),it.minutes,it.costCents,it.expectedFeeling,it.question,it.probability,it.deadlineAt?.let(Time::iso),it.basis,it.prospective) }))
@@ -54,10 +82,10 @@ object Export {
             val errors = Analytics.errors(data)
             put("prediction_errors.csv", csv(listOf("event_id","forecast_id","category","actual_minus_expected_minutes","actual_minus_expected_cents","actual_minus_expected_feeling"), errors.map { listOf(it.event.id,it.forecast.id,it.event.category,it.minutesError,it.costError,it.feelingError) }))
             val dates = Analytics.recordedDates(data)
-            put("daily_summary.csv", csv(listOf("date","has_recorded_data","expense_cents","income_cents","adjustment_cents","activity_minutes_union","sleep_minutes_union","unknown_durations","unknown_event_costs","sleep_confirmed","balance_cents"), dates.map { d ->
+            put("daily_summary.csv", csv(listOf("date","has_recorded_data","expense_cents","income_cents","adjustment_cents","activity_minutes","sleep_minutes_union","unknown_durations","unknown_event_costs","sleep_confirmed","balance_cents"), dates.map { d ->
                 val s=Analytics.daily(data,d); listOf(d,s.anyData,s.expense,s.income,s.adjustment,s.activityMinutes,s.sleepMinutes,s.unknownDurations,s.unknownCosts,s.sleepConfirmed,Analytics.balanceAt(data,Time.start(d.plusDays(1))-1))
             }))
-            put("README.txt", "事记 Daymark 导出格式 2\n金额为人民币分，时长为分钟。日期时间为带时区偏移的 ISO 8601。空白/null=未知；金额和时长的0=明确零。feeling、worth、expected_feeling评分：-2非常不值，-1不值，0中性，1值得，2非常值得；null为未评分。旧版格式1的1–5分导入时减3转换，格式2不再转换。events 为事件，cash 是唯一资金流水来源，不能将事件费用重复相加。睡眠以起床日确认，日汇总按自然日裁切；普通活动时间取区间并集。日汇总仅列有记录的日期。资金余额从最新余额起点（该时刻之前的余额）加上之后流水估算，不代表完整净资产。预测保留全部版本；误差按每个事件首份有效事前估计计算，正值代表低估。CSV 防止文本公式执行，原文见 records.json。删除事件保留事件与预测历史，但其关联流水会删除。导入恢复使用 records.json 或本 ZIP。\n")
+            put("README.txt", "事记 EventLog 导出格式 3\n金额为人民币分，时长为分钟。日期时间为带时区偏移的 ISO 8601。空白/null=未知；金额和时长的0=明确零。feeling、worth、expected_feeling评分：-2非常不值，-1不值，0中性，1值得，2非常值得；null为未评分。旧版格式1的1–5分导入时减3转换，格式2不再转换。events 为事件，cash 是唯一资金流水来源，不能将事件费用重复相加。睡眠以起床日确认，日汇总按自然日裁切；旧活动区间取并集；新记录的 actual_minutes 按 start_at 所属日期相加，不能推断重叠。plans 为计划；预计耗时不参与实际统计，plan_durations 对比预计与实际耗时。日汇总仅列有记录的日期。资金余额从最新余额起点（该时刻之前的余额）加上之后流水估算，不代表完整净资产。预测保留全部版本；误差按每个事件首份有效事前估计计算，正值代表低估。CSV 防止文本公式执行，原文见 records.json。删除事件保留事件与预测历史，但其关联流水会删除。导入恢复使用 records.json 或本 ZIP。\n")
         }
     }
     fun readBackup(input: InputStream): LedgerData {

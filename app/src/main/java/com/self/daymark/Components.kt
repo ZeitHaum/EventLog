@@ -41,12 +41,12 @@ val Amber = Color(0xFFD09542)
 @Composable fun DaymarkNavigation(tab: Int, onTab: (Int) -> Unit, onNew: () -> Unit) {
     Surface(color=MaterialTheme.colorScheme.surface) {
         Column {
-            if(tab==0) Button(onNew,Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).heightIn(min=48.dp),shape=RoundedCornerShape(16.dp),colors=ButtonDefaults.buttonColors(containerColor=SkyBlue,contentColor=PrimaryBlue)) {
-                Text("＋  记一件事",fontSize=16.sp)
+            if(tab==0 || tab==1) Button(onNew,Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).heightIn(min=48.dp),shape=RoundedCornerShape(16.dp),colors=ButtonDefaults.buttonColors(containerColor=SkyBlue,contentColor=PrimaryBlue)) {
+                Text(if(tab==1)"＋  新建计划" else "＋  记一件事",fontSize=16.sp)
             }
             NavigationBar(containerColor=MaterialTheme.colorScheme.surface,tonalElevation=0.dp) {
-                val labels=listOf("今天","日历","趋势","预测","数据")
-                val glyphs=listOf("◷","▦","↗","◎","≡")
+                val labels=listOf("今天","计划","日历","趋势","数据")
+                val glyphs=listOf("◷","✓","▦","↗","≡")
                 labels.forEachIndexed { i,label -> NavigationBarItem(selected=tab==i,onClick={onTab(i)},icon={Text(glyphs[i],fontSize=22.sp)},label={Text(label,fontSize=11.sp)}) }
             }
         }

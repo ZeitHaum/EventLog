@@ -27,11 +27,16 @@ class MainActivity : ComponentActivity() {
     var selectedDay by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
     var editId by rememberSaveable { mutableStateOf<String?>(null) }
     var newEvent by rememberSaveable { mutableStateOf(false) }
+    var planId by rememberSaveable { mutableStateOf<String?>(null) }
+    var planOpen by rememberSaveable { mutableStateOf(false) }
+    var planDay by rememberSaveable { mutableStateOf<String?>(LocalDate.now().toString()) }
+    var completedId by rememberSaveable { mutableStateOf<String?>(null) }
     var sleepOpen by rememberSaveable { mutableStateOf(false) }
     var cashOpen by rememberSaveable { mutableStateOf(false) }
     var cashId by rememberSaveable { mutableStateOf<String?>(null) }
     var balanceOpen by rememberSaveable { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
+    CompletionFeedback(completedId,snack,{editId=it},{completedId=null})
     LaunchedEffect(vm) { vm.messages.collect { snack.showSnackbar(it) } }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { it?.let { uri -> vm.export(uri) } }
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::readRestore) }
@@ -39,15 +44,19 @@ class MainActivity : ComponentActivity() {
     val day=LocalDate.parse(selectedDay)
     fun edit(event: Event) { editId=event.id; newEvent=false }
     Scaffold(containerColor=CanvasColor,snackbarHost={SnackbarHost(snack)},bottomBar={
-        DaymarkNavigation(tab,{tab=it},{newEvent=true;editId=null})
+        DaymarkNavigation(tab,{tab=it},{if(tab==1){planId=null;planDay=selectedDay;planOpen=true}else{newEvent=true;editId=null}})
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             when(tab) {
                 0 -> TodayScreen(data,day,{selectedDay=it.toString()},::edit,{sleepOpen=true},{cashId=null;cashOpen=true},{vm.closeDay(day)}, { cash -> if(cash.eventId!=null) data.activeEvents.find { it.id==cash.eventId }?.let(::edit) else {cashId=cash.id;cashOpen=true} })
-                1 -> CalendarScreen(data,day,{selectedDay=it.toString();tab=0})
-                2 -> TrendsScreen(data,{balanceOpen=true})
-                3 -> ForecastScreen(data,::edit,vm::resolve)
+                1 -> PlansScreen(data,day,{selectedDay=it.toString();planDay=it.toString()},
+                    {p->planId=p.id;planDay=p.day;planOpen=true},
+                    {p->vm.completePlan(p){completedId=it}},vm::undoPlan,
+                    {p->data.events.find{it.id==p.eventId}?.let(::edit)},
+                    {d->planDay=d?.toString();planId=null;planOpen=true})
+                2 -> CalendarScreen(data,day,{selectedDay=it.toString();tab=0})
+                3 -> TrendsScreen(data,{balanceOpen=true})
                 4 -> DataScreen(data,{exportLauncher.launch("EventLog-${LocalDate.now()}.zip")},{restoreLauncher.launch(arrayOf("application/zip","application/json","application/octet-stream"))},{balanceOpen=true},{cashId=null;cashOpen=true},vm.hasRecoveryBackup(),{recoveryLauncher.launch("EventLog-恢复前备份.json")})
             }
         }
@@ -57,8 +66,19 @@ class MainActivity : ComponentActivity() {
         EventEditor(source,source?.let { data.cost(it) },source?.let { data.latestForecast(it.id) },day,
             onDismiss={newEvent=false;editId=null},onSave={e,c,f->vm.saveEvent(e,c,f){newEvent=false;editId=null}},onDelete={e->vm.deleteEvent(e){editId=null}})
     }
+    if(planOpen) PlanEditor(data.plans.find{it.id==planId},planDay?.let(LocalDate::parse),{planOpen=false},
+        {p->vm.savePlan(p){planOpen=false}},{p->vm.deletePlan(p){planOpen=false}})
     if(sleepOpen) SleepEditor(day,data.sleeps.find { it.day==selectedDay },{sleepOpen=false},{vm.saveSleep(it){sleepOpen=false}})
     if(cashOpen) CashEditor(data.cash.find { it.id==cashId },day,{cashOpen=false},{vm.saveCash(it){cashOpen=false}},{vm.deleteCash(it){cashOpen=false}})
     if(balanceOpen) BalanceEditor(data.balances.isEmpty(),{balanceOpen=false},{vm.saveBalance(it){balanceOpen=false}})
-    if(restoring!=null) ConfirmDialog("恢复备份？","备份含 ${restoring!!.activeEvents.size} 个事件、${restoring!!.cash.size} 笔流水。将替换当前数据；恢复前会自动保留一份本地备份，可在数据页导出。",{vm.pendingRestore.value=null},{vm.restore()})
+    if(restoring!=null) ConfirmDialog("恢复备份？","备份含 ${restoring!!.activeEvents.size} 个事件、${restoring!!.cash.size} 笔流水、${restoring!!.activePlans.size} 个计划。将替换当前数据；恢复前会自动保留一份本地备份，可在数据页导出。",{vm.pendingRestore.value=null},{vm.restore()})
+}
+
+@Composable fun CompletionFeedback(id:String?,snack:SnackbarHostState,onEdit:(String)->Unit,onDismiss:()->Unit) {
+    LaunchedEffect(id) {
+        if(id!=null) {
+            if(snack.showSnackbar("✓ 又完成了一件事",actionLabel="补充记录",withDismissAction=true,duration=SnackbarDuration.Short)==SnackbarResult.ActionPerformed)onEdit(id)
+            onDismiss()
+        }
+    }
 }

@@ -27,9 +27,13 @@ data class Event(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt,
     val firstOutcomeAt: Long? = null,
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+    val actualMinutes: Long? = null
 ) {
+    val durationMinutes get() = actualMinutes ?: endAt?.let { (it - startAt) / 60000 }
+    val notes get() = listOf(description, experience).filter { it.isNotBlank() }.joinToString("\n\n")
     fun validate() {
+        require(actualMinutes == null || (actualMinutes in 0..44640 && endAt == null && status == "done")) { "实际耗时无效" }
         require(id.isNotBlank() && title.isNotBlank() && title.length <= 200) { "请填写事件名称（不超过 200 字）" }
         require(category in categories && status in listOf("planned", "done", "cancelled")) { "事件类型无效" }
         require(endAt == null || endAt >= startAt) { "结束时间不能早于开始时间" }
@@ -116,12 +120,41 @@ data class BalanceAnchor(@PrimaryKey val id: String = newId(), val asOf: Long, v
 @Entity(tableName = "day_checks")
 data class DayCheck(@PrimaryKey val day: String, val checkedAt: Long = System.currentTimeMillis())
 
+@Entity(tableName = "plans", indices = [Index("day"), Index(value = ["eventId"], unique = true)])
+data class Plan(
+    @PrimaryKey val id: String = newId(),
+    val title: String,
+    val notes: String = "",
+    val day: String? = null,
+    val period: String = "any",
+    val startMinute: Int? = null,
+    val expectedMinutes: Long? = null,
+    val eventId: String? = null,
+    val completedAt: Long? = null,
+    val savedCostCents: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = createdAt,
+    val deletedAt: Long? = null
+) {
+    fun validate() {
+        require(id.isNotBlank() && title.isNotBlank() && title.length <= 200) { "请填写事项名称（不超过 200 字）" }
+        day?.let { LocalDate.parse(it) }
+        require(period in listOf("any", "morning", "afternoon", "evening")) { "时段无效" }
+        require(day != null || (period == "any" && startMinute == null)) { "请先选择日期" }
+        require(startMinute == null || startMinute in 0..1439) { "开始时间无效" }
+        require(expectedMinutes == null || expectedMinutes in 0..44640) { "预计耗时须为 0–44640 分钟" }
+        require(completedAt == null || (eventId != null && deletedAt == null)) { "完成记录关联无效" }
+        require(savedCostCents == null || savedCostCents in 0..1000000000000) { "费用无效" }
+    }
+}
+
 data class LedgerData(
     val events: List<Event> = emptyList(), val cash: List<CashEntry> = emptyList(),
     val sleeps: List<SleepEntry> = emptyList(), val forecasts: List<Forecast> = emptyList(),
     val resolutions: List<Resolution> = emptyList(), val balances: List<BalanceAnchor> = emptyList(),
-    val checks: List<DayCheck> = emptyList()
+    val checks: List<DayCheck> = emptyList(), val plans: List<Plan> = emptyList()
 ) {
+    val activePlans get() = plans.filter { it.deletedAt == null }
     val activeEvents get() = events.filter { it.deletedAt == null }
     fun latestForecast(id: String) = forecasts.filter { it.eventId == id }.maxByOrNull { it.madeAt }
     fun cost(event: Event): Long? = if (event.costKnown && event.deletedAt == null) -cash.filter { it.eventId == event.id }.sumOf { it.cents } else null
@@ -129,7 +162,7 @@ data class LedgerData(
 
 @Dao
 interface LedgerDao {
-    @Query("SELECT (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM cash) + (SELECT COUNT(*) FROM sleep) + (SELECT COUNT(*) FROM forecasts) + (SELECT COUNT(*) FROM resolutions) + (SELECT COUNT(*) FROM balances) + (SELECT COUNT(*) FROM day_checks)")
+    @Query("SELECT (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM cash) + (SELECT COUNT(*) FROM sleep) + (SELECT COUNT(*) FROM forecasts) + (SELECT COUNT(*) FROM resolutions) + (SELECT COUNT(*) FROM balances) + (SELECT COUNT(*) FROM day_checks) + (SELECT COUNT(*) FROM plans)")
     fun changes(): Flow<Int>
     @Query("SELECT * FROM events ORDER BY startAt DESC") suspend fun events(): List<Event>
     @Query("SELECT * FROM cash ORDER BY occurredAt DESC") suspend fun cash(): List<CashEntry>
@@ -138,6 +171,9 @@ interface LedgerDao {
     @Query("SELECT * FROM resolutions") suspend fun resolutions(): List<Resolution>
     @Query("SELECT * FROM balances ORDER BY asOf") suspend fun balances(): List<BalanceAnchor>
     @Query("SELECT * FROM day_checks") suspend fun checks(): List<DayCheck>
+    @Query("SELECT * FROM plans ORDER BY createdAt, id") suspend fun plans(): List<Plan>
+    @Query("DELETE FROM plans") suspend fun clearPlans()
+    @Upsert suspend fun save(value: Plan)
     @Upsert suspend fun save(value: Event)
     @Upsert suspend fun save(value: CashEntry)
     @Upsert suspend fun save(value: SleepEntry)
@@ -155,13 +191,30 @@ interface LedgerDao {
     @Query("DELETE FROM resolutions") suspend fun clearResolutions()
     @Query("DELETE FROM balances") suspend fun clearBalances()
     @Query("DELETE FROM day_checks") suspend fun clearChecks()
-    @Transaction suspend fun dump() = LedgerData(events(), cash(), sleeps(), forecasts(), resolutions(), balances(), checks())
+    @Transaction suspend fun dump() = LedgerData(events(), cash(), sleeps(), forecasts(), resolutions(), balances(), checks(), plans())
 }
 
-@Database(entities = [Event::class, CashEntry::class, SleepEntry::class, Forecast::class, Resolution::class, BalanceAnchor::class, DayCheck::class], version = 2, exportSchema = true)
+@Database(entities = [Event::class, CashEntry::class, SleepEntry::class, Forecast::class, Resolution::class, BalanceAnchor::class, DayCheck::class, Plan::class], version = 3, exportSchema = true)
 abstract class LedgerDatabase : RoomDatabase() {
     abstract fun dao(): LedgerDao
     companion object {
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE events ADD COLUMN actualMinutes INTEGER")
+                db.execSQL("CREATE TABLE IF NOT EXISTS plans (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL, day TEXT, period TEXT NOT NULL, startMinute INTEGER, expectedMinutes INTEGER, eventId TEXT, completedAt INTEGER, savedCostCents INTEGER, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, deletedAt INTEGER)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_plans_day ON plans(day)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_plans_eventId ON plans(eventId)")
+                // Keep legacy events and forecasts intact; expose pending legacy events as plans.
+                db.query("SELECT id,title,description,experience,startAt,createdAt,updatedAt FROM events WHERE status='planned' AND deletedAt IS NULL").use { c ->
+                    while (c.moveToNext()) {
+                        val at = c.getLong(4)
+                        val local = Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault())
+                        val minutes = db.query("SELECT minutes FROM forecasts WHERE eventId=? ORDER BY madeAt DESC LIMIT 1", arrayOf(c.getString(0))).use { f -> if (f.moveToFirst() && !f.isNull(0)) f.getLong(0) else null }
+                        db.execSQL("INSERT INTO plans (id,title,notes,day,period,startMinute,expectedMinutes,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)", arrayOf("legacy-${c.getString(0)}", c.getString(1), listOf(c.getString(2),c.getString(3)).filter { it.isNotBlank() }.joinToString("\n\n"), local.toLocalDate().toString(), "any", local.hour * 60 + local.minute, minutes, c.getLong(5), c.getLong(6)))
+                    }
+                }
+            }
+        }
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // Subtracting from SQL NULL preserves unanswered ratings.
@@ -171,7 +224,7 @@ abstract class LedgerDatabase : RoomDatabase() {
         }
         @Volatile private var instance: LedgerDatabase? = null
         fun get(context: Context) = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(context.applicationContext, LedgerDatabase::class.java, "daymark.db").addMigrations(MIGRATION_1_2).build().also { instance = it }
+            instance ?: Room.databaseBuilder(context.applicationContext, LedgerDatabase::class.java, "daymark.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
     }
 }

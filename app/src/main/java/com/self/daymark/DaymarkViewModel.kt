@@ -20,14 +20,21 @@ class DaymarkViewModel(app: Application) : AndroidViewModel(app) {
         if (busy.value) return
         busy.value = true
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { action() }; onSuccess(); messages.emit(message) }
+            try { withContext(Dispatchers.IO) { action() }; onSuccess(); if(message.isNotBlank())messages.emit(message) }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { messages.emit(e.message ?: "操作失败，请重试") }
             finally { busy.value = false }
         }
     }
     fun saveEvent(e: Event, cost: Long?, forecast: Forecast?, onSaved: () -> Unit) = run(onSuccess=onSaved) { repository.saveEvent(e,cost,forecast) }
-    fun deleteEvent(e: Event, onSaved: () -> Unit) = run("已删除事件及关联支出，预测历史仍在导出中保留",onSaved) { repository.deleteEvent(e) }
+    fun deleteEvent(e: Event, onSaved: () -> Unit) = run("已移除记录及关联支出",onSaved) { repository.deleteEvent(e) }
+    fun savePlan(p: Plan, onSaved: () -> Unit) = run(onSuccess=onSaved) { repository.savePlan(p) }
+    fun completePlan(p: Plan, onSaved: (String) -> Unit) {
+        var eventId = ""
+        run("", { onSaved(eventId) }) { eventId = repository.completePlan(p.id) }
+    }
+    fun undoPlan(p: Plan) = run("已撤销完成，事项回到待办") { repository.undoPlan(p.id) }
+    fun deletePlan(p: Plan, onSaved: () -> Unit) = run("已删除计划", onSaved) { repository.deletePlan(p.id) }
     fun saveSleep(s: SleepEntry, onSaved: () -> Unit) = run("睡眠情况已确认",onSaved) { repository.saveSleep(s) }
     fun saveCash(c: CashEntry, onSaved: () -> Unit) = run(onSuccess=onSaved) { repository.saveCash(c) }
     fun deleteCash(c: CashEntry, onSaved: () -> Unit) = run("已删除流水",onSaved) { repository.deleteCash(c) }

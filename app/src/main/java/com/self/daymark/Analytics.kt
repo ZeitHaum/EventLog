@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.*
 
 object Time {
+    fun recordAt(day: LocalDate): Long = if (day == LocalDate.now()) System.currentTimeMillis() else start(day) + 12 * 3600000L
     fun day(epoch: Long, zone: ZoneId = ZoneId.systemDefault()): LocalDate = Instant.ofEpochMilli(epoch).atZone(zone).toLocalDate()
     fun start(day: LocalDate, zone: ZoneId = ZoneId.systemDefault()) = day.atStartOfDay(zone).toInstant().toEpochMilli()
     fun parse(date: String, clock: String): Long = LocalDateTime.of(LocalDate.parse(date), LocalTime.parse(clock)).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -76,10 +77,11 @@ object Analytics {
         val started = events.filter { it.startAt in from until to }
         val transactions = data.cash.filter { it.occurredAt in from until to }
         val sleep = data.sleeps.filter { it.status == "timed" }.map { it.startAt!! to it.endAt!! }
-        val activity = unionMinutes(events.mapNotNull { e -> e.endAt?.let { e.startAt to it } }, from, to)
+        // Legacy intervals retain their union semantics; new duration-only records belong to their selected date.
+        val activity = unionMinutes(events.mapNotNull { e -> e.endAt?.let { e.startAt to it } }, from, to) + started.sumOf { it.actualMinutes ?: 0L }
         val sleepMinutes = unionMinutes(sleep, from, to)
         val confirmed = data.sleeps.any { it.day == date.toString() }
-        return DailySummary(date, -transactions.filter { it.kind == "expense" }.sumOf { it.cents }, transactions.filter { it.kind == "income" }.sumOf { it.cents }, transactions.filter { it.kind == "adjustment" }.sumOf { it.cents }, activity, sleepMinutes, started.count { it.endAt == null }, started.count { !it.costKnown }, started.size, confirmed, started.isNotEmpty() || transactions.isNotEmpty() || sleepMinutes > 0 || confirmed || activity > 0)
+        return DailySummary(date, -transactions.filter { it.kind == "expense" }.sumOf { it.cents }, transactions.filter { it.kind == "income" }.sumOf { it.cents }, transactions.filter { it.kind == "adjustment" }.sumOf { it.cents }, activity, sleepMinutes, started.count { it.durationMinutes == null }, started.count { !it.costKnown }, started.size, confirmed, started.isNotEmpty() || transactions.isNotEmpty() || sleepMinutes > 0 || confirmed || activity > 0)
     }
     fun balanceAt(data: LedgerData, at: Long): Long? {
         val anchor = data.balances.filter { it.asOf <= at }.maxWithOrNull(compareBy<BalanceAnchor> { it.asOf }.thenBy { it.createdAt }) ?: return null
@@ -91,7 +93,7 @@ object Analytics {
     fun errors(data: LedgerData): List<ErrorRow> = data.activeEvents.filter { it.status == "done" }.mapNotNull { event ->
         val forecast = baseline(data, event) ?: return@mapNotNull null
         ErrorRow(event, forecast,
-            if (event.endAt != null && forecast.minutes != null) (event.endAt - event.startAt) / 60000 - forecast.minutes else null,
+            if (event.durationMinutes != null && forecast.minutes != null) event.durationMinutes!! - forecast.minutes else null,
             if (data.cost(event) != null && forecast.costCents != null) data.cost(event)!! - forecast.costCents else null,
             if (event.feeling != null && forecast.expectedFeeling != null) event.feeling - forecast.expectedFeeling else null)
     }

@@ -6,6 +6,46 @@ import java.time.LocalDate
 class LedgerRepository(private val db: LedgerDatabase) {
     val dao get() = db.dao()
 
+    suspend fun savePlan(input: Plan) = db.withTransaction {
+        val old = dao.plans().find { it.id == input.id }
+        require(old?.completedAt == null && old?.deletedAt == null) { "已完成事项请编辑对应记录" }
+        val plan = input.copy(eventId = old?.eventId, completedAt = null, savedCostCents = old?.savedCostCents,
+            createdAt = old?.createdAt ?: input.createdAt, updatedAt = System.currentTimeMillis(), deletedAt = null)
+        plan.validate(); dao.save(plan)
+    }
+
+    suspend fun completePlan(id: String, actualMinutes: Long? = null): String = db.withTransaction {
+        val plan = dao.plans().first { it.id == id }
+        require(plan.deletedAt == null) { "事项已删除" }
+        if (plan.completedAt != null) return@withTransaction plan.eventId!!
+        require(actualMinutes == null || actualMinutes in 0..44640) { "实际耗时无效" }
+        val now = System.currentTimeMillis()
+        val old = dao.events().find { it.id == plan.eventId }
+        val event = old?.copy(deletedAt = null, updatedAt = now) ?: Event(id = newId(), title = plan.title,
+            startAt = now, description = plan.notes, actualMinutes = actualMinutes, firstOutcomeAt = now)
+        saveEvent(event, plan.savedCostCents, null)
+        dao.save(plan.copy(eventId = event.id, completedAt = now, updatedAt = now, savedCostCents = null))
+        event.id
+    }
+
+    suspend fun undoPlan(id: String) = db.withTransaction {
+        val plan = dao.plans().first { it.id == id }
+        if (plan.completedAt == null) return@withTransaction
+        val data = dao.dump()
+        val event = data.events.first { it.id == plan.eventId }
+        val now = System.currentTimeMillis()
+        dao.save(plan.copy(completedAt = null, savedCostCents = data.cost(event), updatedAt = now))
+        dao.save(event.copy(deletedAt = now, updatedAt = now))
+        dao.deleteEventCash(event.id)
+        invalidate(event.startAt, event.endAt)
+    }
+
+    suspend fun deletePlan(id: String) = db.withTransaction {
+        val plan = dao.plans().first { it.id == id }
+        require(plan.completedAt == null) { "请先撤销完成" }
+        dao.save(plan.copy(deletedAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()))
+    }
+
     suspend fun saveEvent(input: Event, cost: Long?, forecastInput: Forecast?) = db.withTransaction {
         val now = System.currentTimeMillis()
         val data = dao.dump()
@@ -33,6 +73,8 @@ class LedgerRepository(private val db: LedgerDatabase) {
     }
 
     suspend fun deleteEvent(event: Event) = db.withTransaction {
+        val plan = dao.plans().find { it.eventId == event.id && it.completedAt != null }
+        if (plan != null) { undoPlan(plan.id); return@withTransaction }
         dao.save(event.copy(deletedAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()))
         dao.deleteEventCash(event.id)
         invalidate(event.startAt, event.endAt)
@@ -80,8 +122,9 @@ class LedgerRepository(private val db: LedgerDatabase) {
     }
     suspend fun restore(data: LedgerData) = db.withTransaction {
         Export.validate(data)
-        dao.clearChecks(); dao.clearResolutions(); dao.clearForecasts(); dao.clearCash(); dao.clearSleep(); dao.clearBalances(); dao.clearEvents()
+        dao.clearPlans(); dao.clearChecks(); dao.clearResolutions(); dao.clearForecasts(); dao.clearCash(); dao.clearSleep(); dao.clearBalances(); dao.clearEvents()
         data.events.forEach { dao.save(it) }; data.cash.forEach { dao.save(it) }; data.sleeps.forEach { dao.save(it) }
         data.forecasts.forEach { dao.save(it) }; data.resolutions.forEach { dao.save(it) }; data.balances.forEach { dao.save(it) }; data.checks.forEach { dao.save(it) }
+        data.plans.forEach { dao.save(it) }
     }
 }

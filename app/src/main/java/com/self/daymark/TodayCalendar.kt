@@ -19,19 +19,19 @@ import java.time.*
 
 @Composable fun TodayScreen(data:LedgerData, day:LocalDate, onDay:(LocalDate)->Unit, onEdit:(Event)->Unit, onSleep:()->Unit,onCash:()->Unit,onClose:()->Unit,onEditCash:(CashEntry)->Unit) {
     val summary=remember(data,day){Analytics.daily(data,day)}
-    val events=data.activeEvents.filter { Time.day(it.startAt)==day || (it.endAt!=null && it.startAt<Time.start(day.plusDays(1)) && it.endAt>Time.start(day)) }.sortedBy { it.startAt }
+    val events=data.activeEvents.filter { it.status=="done" && (Time.day(it.startAt)==day || (it.endAt!=null && it.startAt<Time.start(day.plusDays(1)) && it.endAt>Time.start(day))) }.sortedBy { it.startAt }
     val sleep=data.sleeps.find { it.day==day.toString() }
     val checked=data.checks.any { it.day==day.toString() }
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp,16.dp,20.dp,24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Eyebrow("EVENTLOG / 事记"); Label("本地 · 离线可用") } }
-        item { Text("把今天，记清楚。",fontSize=26.sp,fontWeight=FontWeight.Bold,color=Ink); Label("时间、金钱与体验，留给下一次选择。") }
+
         item { DaySelector(day,onDay) }
         item { Panel(color=SkyBlue) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
                 Column { Text("已记录支出",color=Muted,fontSize=12.sp); Text("¥ ${money(summary.expense)}",fontSize=32.sp,fontWeight=FontWeight.Bold,color=Ink) }
-                Column(horizontalAlignment=Alignment.End) { Text("活动占用",color=Muted,fontSize=12.sp); Text(minutesText(summary.activityMinutes),fontSize=25.sp,fontWeight=FontWeight.SemiBold,color=Ink) }
+                Column(horizontalAlignment=Alignment.End) { Text("活动耗时",color=Muted,fontSize=12.sp); Text(minutesText(summary.activityMinutes),fontSize=25.sp,fontWeight=FontWeight.SemiBold,color=Ink) }
             }
-            Text("${summary.eventCount} 件已完成  ·  ${if(summary.unknownCosts>0) "${summary.unknownCosts} 件费用待补" else "只汇总已知记录"}  ·  ${if(summary.unknownDurations>0) "${summary.unknownDurations} 件时长待补" else "重叠时间不重复计算"}",color=Muted,fontSize=11.sp)
+            Text("${summary.eventCount} 件已完成  ·  ${if(summary.unknownCosts>0) "${summary.unknownCosts} 件费用待补" else "费用已记录"}  ·  ${if(summary.unknownDurations>0) "${summary.unknownDurations} 件时长待补" else "时长已记录"}",color=Muted,fontSize=11.sp)
         } }
         item { Panel(Modifier.clickable(onClick=onSleep),color=if(sleep==null)Color(0xFFFFF0DC) else Color(0xFFEAEEF9)) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
@@ -41,29 +41,21 @@ import java.time.*
             }
         } }
         item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Title("这一天的事情"); TextButton(onCash){Text("＋ 收支") } } }
-        if(events.isEmpty()) item { EmptyCard("留下一件小事","吃饭、读书，或好好休息。点下方开始，没有预估也可以记录。") }
+        if(events.isEmpty()) item { EmptyCard("还没有记录","点下方记一件事。") }
         items(events,key={it.id}) { event -> EventCard(event,data.cost(event),data.latestForecast(event.id)){onEdit(event)} }
         val cash=data.cash.filter { it.eventId==null && Time.day(it.occurredAt)==day }.sortedBy{it.occurredAt}
         if(cash.isNotEmpty()) item { Title("独立收支") }
         items(cash,key={"cash-${it.id}"}) { c -> Panel(Modifier.clickable{onEditCash(c)}) { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) { Text(c.title,Modifier.weight(1f)); Text((if(c.cents>=0) "+" else "")+"¥ "+money(c.cents),color=if(c.cents>=0)PrimaryBlue else Clay) }; Label("${Time.clock(c.occurredAt)} · ${when(c.kind){"income"->"收入";"adjustment"->"余额调整";else->"支出"}}") } }
-        if(day<=LocalDate.now()) item { OutlinedButton(onClose,Modifier.fillMaxWidth(),enabled=sleep!=null&&!checked) { Text(if(checked)"✓ 当天记录已确认" else if(sleep==null)"先确认睡眠，再完成当天记录" else "确认当天记录") }; Label("确认表示已复核，不代表空白时间或费用为零。修改后需要重新确认。") }
+        if(day<=LocalDate.now()) item { OutlinedButton(onClose,Modifier.fillMaxWidth(),enabled=sleep!=null&&!checked) { Text(if(checked)"✓ 当天记录已确认" else if(sleep==null)"先确认睡眠，再完成当天记录" else "确认当天记录") } }
     }
 }
 
 @Composable fun EventCard(event:Event,cost:Long?,forecast:Forecast?,onClick:()->Unit) {
     Panel(Modifier.clickable(onClick=onClick)) {
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-            Label("${Time.clock(event.startAt)}  ·  ${event.category}")
-            Text(when(event.status){"planned"->"计划中";"cancelled"->"已取消";else->"已完成"},color=if(event.status=="planned")Amber else Muted,fontSize=11.sp)
-        }
         Text(event.title,fontSize=18.sp,fontWeight=FontWeight.SemiBold)
-        if(event.experience.isNotBlank()) Text(event.experience,color=Muted,fontSize=13.sp,maxLines=3)
-        if(event.status=="done") {
-            val minutes=event.endAt?.let{(it-event.startAt)/60000}
-            Label("实际 ${minutesText(minutes)} · ¥ ${money(cost)}")
-            event.feeling?.let { Label("体验 ${ExperienceScale.text(it)}") }
-        }
-        if(forecast!=null) Label("预计 ${minutesText(forecast.minutes)} · ¥ ${money(forecast.costCents)}${if(!forecast.prospective)" · 回顾记录" else ""}")
+        if(event.notes.isNotBlank())Text(event.notes,color=Muted,fontSize=13.sp,maxLines=3)
+        Label("${minutesText(event.durationMinutes)} · ¥ ${money(cost)}")
+        event.feeling?.let { Label(ExperienceScale.text(it)) }
     }
 }
 
@@ -76,7 +68,7 @@ import java.time.*
     val totalExpense=summaries.values.sumOf{it.expense}
     val trackingStart=remember(data){minOf(Analytics.recordedDates(data).firstOrNull() ?: LocalDate.now(),LocalDate.now())}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-        Title("一月的时间与收支")
+        Title("日历")
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
             TextButton({monthText=month.minusMonths(1).toString()}){Text("‹",fontSize=24.sp)}
             DateControl(month.atDay(1),{monthText=YearMonth.from(it).toString()},label="",display="${month.year} 年 ${month.monthValue} 月")
@@ -119,7 +111,7 @@ import java.time.*
             }
           }
         }
-        Label(when(mode){"收支"->"格内为已记录净收支（含调整），不是资产余额；颜色只表示资金方向。";"活动"->"普通活动按自然日裁切、重叠区间只计一次；未记录的时间保持未知。";else->"格内为落在该自然日内的已记录睡眠时长；每天按起床日期确认。"})
+        Label(when(mode){"收支"->"格内为已记录净收支（含调整），不是资产余额；颜色只表示资金方向。";"活动"->"按日期汇总耗时；旧区间仍去重，未填写为未知。";else->"格内为落在该自然日内的已记录睡眠时长；每天按起床日期确认。"})
         TextButton({monthText=YearMonth.now().toString()}){Text("回到本月")}
         Spacer(Modifier.height(12.dp))
     }
