@@ -46,7 +46,7 @@ class LedgerRepository(private val db: LedgerDatabase) {
         dao.save(plan.copy(deletedAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()))
     }
 
-    suspend fun saveEvent(input: Event, cost: Long?, forecastInput: Forecast?) = db.withTransaction {
+    suspend fun saveEvent(input: Event, cost: Long?, forecastInput: Forecast?, photos: List<Photo>? = null) = db.withTransaction {
         val now = System.currentTimeMillis()
         val data = dao.dump()
         val old = data.events.find { it.id == input.id }
@@ -57,6 +57,7 @@ class LedgerRepository(private val db: LedgerDatabase) {
         require(event.status != "done" || event.startAt <= now) { "未来事件请先保存为计划" }
         require(event.endAt == null || event.endAt <= now + 60000) { "实际结束时间不能在未来" }
         dao.save(event)
+        if(photos!=null)replacePhotos("event",event.id,photos)
         dao.deleteEventCash(event.id)
         if (event.costKnown) dao.save(CashEntry(id = "event-${event.id}", eventId = event.id, title = event.title, cents = -cost!!,
             kind = "expense", occurredAt = event.startAt, createdAt = old?.createdAt ?: now, updatedAt = now))
@@ -94,16 +95,18 @@ class LedgerRepository(private val db: LedgerDatabase) {
         sleep.startAt?.let { invalidate(it, sleep.endAt) }
         dao.save(sleep); dao.uncheck(sleep.day)
     }
-    suspend fun saveCash(cash: CashEntry) = db.withTransaction {
+    suspend fun saveCash(cash: CashEntry, photos: List<Photo>? = null) = db.withTransaction {
         cash.validate()
         require(cash.eventId == null) { "事件费用请从事件中修改" }
         require(cash.occurredAt <= System.currentTimeMillis()) { "流水只能记录实际已发生的收支" }
         dao.cash().find { it.id == cash.id }?.let { dao.uncheck(Time.day(it.occurredAt).toString()) }
         dao.save(cash); dao.uncheck(Time.day(cash.occurredAt).toString())
+        if(photos!=null)replacePhotos("cash",cash.id,photos)
     }
     suspend fun deleteCash(cash: CashEntry) = db.withTransaction {
         require(cash.eventId == null) { "事件费用请从事件中修改" }
         dao.deleteCash(cash.id); dao.uncheck(Time.day(cash.occurredAt).toString())
+        dao.deletePhotos("cash",cash.id)
     }
     suspend fun saveBalance(anchor: BalanceAnchor) {
         require(anchor.asOf <= System.currentTimeMillis()) { "余额起点不能在未来" }
@@ -122,9 +125,19 @@ class LedgerRepository(private val db: LedgerDatabase) {
     }
     suspend fun restore(data: LedgerData) = db.withTransaction {
         Export.validate(data)
+        dao.clearPhotos()
         dao.clearPlans(); dao.clearChecks(); dao.clearResolutions(); dao.clearForecasts(); dao.clearCash(); dao.clearSleep(); dao.clearBalances(); dao.clearEvents()
         data.events.forEach { dao.save(it) }; data.cash.forEach { dao.save(it) }; data.sleeps.forEach { dao.save(it) }
         data.forecasts.forEach { dao.save(it) }; data.resolutions.forEach { dao.save(it) }; data.balances.forEach { dao.save(it) }; data.checks.forEach { dao.save(it) }
         data.plans.forEach { dao.save(it) }
+        data.photos.forEach { dao.save(it) }
+    }
+    private suspend fun replacePhotos(type:String,id:String,photos:List<Photo>) {
+        val selected=photos.map{it.copy(ownerType=type,ownerId=id)}
+        require(selected.size<=PhotoPolicy.MAX_COUNT && selected.map{it.id}.distinct().size==selected.size) { "每条记录最多 12 张图片，不能重复" }
+        selected.forEach{it.validate()}
+        val existing=dao.photos()
+        require(selected.none{p->existing.any{it.id==p.id && (it.ownerType!=type||it.ownerId!=id)}}) { "图片编号已属于其他记录" }
+        dao.deletePhotos(type,id);selected.forEach{dao.save(it)}
     }
 }

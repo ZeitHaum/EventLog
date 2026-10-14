@@ -13,7 +13,7 @@ class ExportTest {
         val events=scores.mapIndexed { i,score -> Event(id="e$i",title="评分 $i",startAt=10,feeling=score,worth=score) }
         val data=LedgerData(events=events,forecasts=events.map { Forecast(eventId=it.id,expectedFeeling=it.feeling) })
         val json=Export.json(data)
-        assertTrue(json.contains("\"schemaVersion\": 3"))
+        assertTrue(json.contains("\"schemaVersion\": 4"))
         assertEquals(data,Export.fromJson(json))
         val bytes=ByteArrayOutputStream().also{Export.writeZip(it,data)}.toByteArray()
         assertEquals(data,Export.readBackup(ByteArrayInputStream(bytes)))

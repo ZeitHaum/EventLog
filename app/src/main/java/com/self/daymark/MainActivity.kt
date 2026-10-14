@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
     LaunchedEffect(vm) { vm.messages.collect { snack.showSnackbar(it) } }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { it?.let { uri -> vm.export(uri) } }
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::readRestore) }
-    val recoveryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { it?.let { uri -> vm.export(uri,true) } }
+    val recoveryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { it?.let { uri -> vm.export(uri,true) } }
     val day=LocalDate.parse(selectedDay)
     fun edit(event: Event) { editId=event.id; newEvent=false }
     Scaffold(containerColor=CanvasColor,snackbarHost={SnackbarHost(snack)},bottomBar={
@@ -57,21 +57,21 @@ class MainActivity : ComponentActivity() {
                     {d->planDay=d?.toString();planId=null;planOpen=true})
                 2 -> CalendarScreen(data,day,{selectedDay=it.toString();tab=0})
                 3 -> TrendsScreen(data,{balanceOpen=true})
-                4 -> DataScreen(data,{exportLauncher.launch("EventLog-${LocalDate.now()}.zip")},{restoreLauncher.launch(arrayOf("application/zip","application/json","application/octet-stream"))},{balanceOpen=true},{cashId=null;cashOpen=true},vm.hasRecoveryBackup(),{recoveryLauncher.launch("EventLog-恢复前备份.json")})
+                4 -> DataScreen(data,{exportLauncher.launch("EventLog-${LocalDate.now()}.zip")},{restoreLauncher.launch(arrayOf("application/zip","application/json","application/octet-stream"))},{balanceOpen=true},{cashId=null;cashOpen=true},vm.hasRecoveryBackup(),{recoveryLauncher.launch(vm.recoveryFileName())})
             }
         }
     }
     if(newEvent||editId!=null) {
         val source=data.events.find { it.id==editId }
         EventEditor(source,source?.let { data.cost(it) },source?.let { data.latestForecast(it.id) },day,
-            onDismiss={newEvent=false;editId=null},onSave={e,c,f->vm.saveEvent(e,c,f){newEvent=false;editId=null}},onDelete={e->vm.deleteEvent(e){editId=null}})
+            onDismiss={newEvent=false;editId=null},onSave={e,c,f,p->vm.saveEvent(e,c,f,p){newEvent=false;editId=null}},onDelete={e->vm.deleteEvent(e){editId=null}},sourcePhotos=data.photosFor("event",editId))
     }
     if(planOpen) PlanEditor(data.plans.find{it.id==planId},planDay?.let(LocalDate::parse),{planOpen=false},
         {p->vm.savePlan(p){planOpen=false}},{p->vm.deletePlan(p){planOpen=false}})
     if(sleepOpen) SleepEditor(day,data.sleeps.find { it.day==selectedDay },{sleepOpen=false},{vm.saveSleep(it){sleepOpen=false}})
-    if(cashOpen) CashEditor(data.cash.find { it.id==cashId },day,{cashOpen=false},{vm.saveCash(it){cashOpen=false}},{vm.deleteCash(it){cashOpen=false}})
+    if(cashOpen) CashEditor(data.cash.find { it.id==cashId },day,{cashOpen=false},{c,p->vm.saveCash(c,p){cashOpen=false}},{vm.deleteCash(it){cashOpen=false}},data.photosFor("cash",cashId))
     if(balanceOpen) BalanceEditor(data.balances.isEmpty(),{balanceOpen=false},{vm.saveBalance(it){balanceOpen=false}})
-    if(restoring!=null) ConfirmDialog("恢复备份？","备份含 ${restoring!!.activeEvents.size} 个事件、${restoring!!.cash.size} 笔流水、${restoring!!.activePlans.size} 个计划。将替换当前数据；恢复前会自动保留一份本地备份，可在数据页导出。",{vm.pendingRestore.value=null},{vm.restore()})
+    if(restoring!=null) ConfirmDialog("恢复备份？","备份含 ${restoring!!.activeEvents.size} 个事件、${restoring!!.cash.size} 笔流水、${restoring!!.activePlans.size} 个计划。将替换当前数据；恢复前会自动保留一份本地备份，可在数据页导出。",{vm.cancelRestore()},{vm.restore()})
 }
 
 @Composable fun CompletionFeedback(id:String?,snack:SnackbarHostState,onEdit:(String)->Unit,onDismiss:()->Unit) {

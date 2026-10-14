@@ -75,7 +75,7 @@ class UiScreenshotTest {
     @Test fun simplifiedEditorMergesLegacyTextAndSavesDurationZeroCostAndNegativeRating() {
         val source=fixture().events.single().copy(description="原来的描述",experience="原来的体验",actualMinutes=null,endAt=Time.recordAt(day)+3600000)
         var saved:Event?=null;var cost:Long?=null
-        compose.activityRule.scenario.onActivity{a->a.setContent{DaymarkTheme{EventEditor(source,null,null,day,{}, {e,c,_->saved=e;cost=c},{})}}}
+        compose.activityRule.scenario.onActivity{a->a.setContent{DaymarkTheme{EventEditor(source,null,null,day,{}, {e,c,_,_->saved=e;cost=c},{})}}}
         compose.onNodeWithText("计划中").assertDoesNotExist()
         compose.onNodeWithText("原来的描述\n\n原来的体验").assertExists()
         compose.onNodeWithText("实际耗时 / 分钟").performTextReplacement("90")
@@ -90,7 +90,7 @@ class UiScreenshotTest {
     }
     @Test fun newCashDefaultsToExpenseAndAllowsSwitchToIncome() {
         var saved:CashEntry?=null
-        compose.activityRule.scenario.onActivity{a->a.setContent{DaymarkTheme{CashEditor(null,day,{}, {saved=it},{})}}}
+        compose.activityRule.scenario.onActivity{a->a.setContent{DaymarkTheme{CashEditor(null,day,{}, {c,_->saved=c},{})}}}
         compose.onNodeWithText("支出").assertIsSelected()
         compose.onNodeWithText("名称 *").performTextInput("午餐")
         compose.onNodeWithText("金额 / 元 *").performTextInput("25")

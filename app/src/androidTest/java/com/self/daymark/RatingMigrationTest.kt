@@ -40,7 +40,7 @@ class RatingMigrationTest {
                 sql.execSQL("INSERT INTO cash (id,eventId,title,cents,kind,occurredAt,createdAt,updatedAt) VALUES ('cash',NULL,'原收入',5000,'income',10,1,1)")
                 sql.version=1
             }
-            fun open()=Room.databaseBuilder(context,LedgerDatabase::class.java,name).addMigrations(LedgerDatabase.MIGRATION_1_2,LedgerDatabase.MIGRATION_2_3).build()
+            fun open()=Room.databaseBuilder(context,LedgerDatabase::class.java,name).addMigrations(LedgerDatabase.MIGRATION_1_2,LedgerDatabase.MIGRATION_2_3,LedgerDatabase.MIGRATION_3_4).build()
             val db=open()
             val migrated=try { db.dao().dump() } finally { db.close() }
             val expected=listOf(null,-2,-1,0,1,2)

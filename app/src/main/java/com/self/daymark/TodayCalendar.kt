@@ -42,20 +42,20 @@ import java.time.*
         } }
         item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Title("这一天的事情"); TextButton(onCash){Text("＋ 收支") } } }
         if(events.isEmpty()) item { EmptyCard("还没有记录","点下方记一件事。") }
-        items(events,key={it.id}) { event -> EventCard(event,data.cost(event),data.latestForecast(event.id)){onEdit(event)} }
+        items(events,key={it.id}) { event -> EventCard(event,data.cost(event),data.latestForecast(event.id),data.photosFor("event",event.id)){onEdit(event)} }
         val cash=data.cash.filter { it.eventId==null && Time.day(it.occurredAt)==day }.sortedBy{it.occurredAt}
         if(cash.isNotEmpty()) item { Title("独立收支") }
-        items(cash,key={"cash-${it.id}"}) { c -> Panel(Modifier.clickable{onEditCash(c)}) { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) { Text(c.title,Modifier.weight(1f)); Text((if(c.cents>=0) "+" else "")+"¥ "+money(c.cents),color=if(c.cents>=0)PrimaryBlue else Clay) }; Label("${Time.clock(c.occurredAt)} · ${when(c.kind){"income"->"收入";"adjustment"->"余额调整";else->"支出"}}") } }
+        items(cash,key={"cash-${it.id}"}) { c -> Panel(Modifier.clickable{onEditCash(c)}) { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) { Text(c.title,Modifier.weight(1f)); Text((if(c.cents>=0) "+" else "")+"¥ "+money(c.cents),color=if(c.cents>=0)PrimaryBlue else Clay) }; Label("${Time.clock(c.occurredAt)} · ${when(c.kind){"income"->"收入";"adjustment"->"余额调整";else->"支出"}}");PhotoPreview(data.photosFor("cash",c.id)) } }
         if(day<=LocalDate.now()) item { OutlinedButton(onClose,Modifier.fillMaxWidth(),enabled=sleep!=null&&!checked) { Text(if(checked)"✓ 当天记录已确认" else if(sleep==null)"先确认睡眠，再完成当天记录" else "确认当天记录") } }
     }
 }
 
-@Composable fun EventCard(event:Event,cost:Long?,forecast:Forecast?,onClick:()->Unit) {
+@Composable fun EventCard(event:Event,cost:Long?,forecast:Forecast?,photos:List<Photo> = emptyList(),onClick:()->Unit) {
     Panel(Modifier.clickable(onClick=onClick)) {
         Text(event.title,fontSize=18.sp,fontWeight=FontWeight.SemiBold)
         if(event.notes.isNotBlank())Text(event.notes,color=Muted,fontSize=13.sp,maxLines=3)
         Label("${minutesText(event.durationMinutes)} · ¥ ${money(cost)}")
-        event.feeling?.let { Label(ExperienceScale.text(it)) }
+        event.feeling?.let { Label(ExperienceScale.text(it)) };PhotoPreview(photos)
     }
 }
 

@@ -17,7 +17,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import java.time.*
 
-@Composable fun EditorFrame(title:String,onDismiss:()->Unit,onSave:()->Unit,content:@Composable ColumnScope.()->Unit) {
+@Composable fun EditorFrame(title:String,onDismiss:()->Unit,onSave:()->Unit,saveEnabled:Boolean=true,content:@Composable ColumnScope.()->Unit) {
     Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
         val view=LocalView.current
         SideEffect {
@@ -32,7 +32,7 @@ import java.time.*
         Surface(Modifier.fillMaxSize(),color=CanvasColor) {
             Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).imePadding()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
-                    TextButton(onDismiss){Text("取消")}; Title(title); Button(onSave){Text("保存")}
+                    TextButton(onDismiss){Text("取消")}; Title(title); Button(onSave,enabled=saveEnabled){Text("保存")}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.3f))
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp),content=content)
@@ -41,7 +41,7 @@ import java.time.*
     }
 }
 
-@Composable fun EventEditor(source:Event?,actualCost:Long?,latest:Forecast?,day:LocalDate,onDismiss:()->Unit,onSave:(Event,Long?,Forecast?)->Unit,onDelete:(Event)->Unit) {
+@Composable fun EventEditor(source:Event?,actualCost:Long?,latest:Forecast?,day:LocalDate,onDismiss:()->Unit,onSave:(Event,Long?,Forecast?,List<Photo>)->Unit,onDelete:(Event)->Unit,sourcePhotos:List<Photo> = emptyList()) {
     val key=source?.id ?: "new"
     val id=rememberSaveable(key){source?.id ?: newId()}
     var title by rememberSaveable(key){mutableStateOf(source?.title ?: "")}
@@ -50,6 +50,8 @@ import java.time.*
     var cost by rememberSaveable(key){mutableStateOf(actualCost?.let(::money) ?: "")}
     var notes by rememberSaveable(key){mutableStateOf(source?.notes ?: "")}
     var feeling by rememberSaveable(key){mutableStateOf(source?.feeling)}
+    var photos by rememberSaveable(key){mutableStateOf(ArrayList(sourcePhotos))}
+    var photoBusy by remember{mutableStateOf(false)}
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf(false) }
     EditorFrame(if(source==null)"记一件事" else "编辑记录",onDismiss,{
@@ -64,9 +66,9 @@ import java.time.*
             val event=base.copy(title=title.trim(),status="done",description=notes.trim(),experience="",feeling=feeling,
                 startAt=if(Time.day(base.startAt)==selected)base.startAt else Time.recordAt(selected),endAt=if(keepInterval)base.endAt else null,
                 actualMinutes=if(keepInterval)base.actualMinutes else minutes,costKnown=paid!=null)
-            event.validate();onSave(event,paid,null)
+            event.validate();onSave(event,paid,null,photos)
         } catch(e:Exception){error=e.message ?: "请检查填写内容"}
-    }) {
+    },saveEnabled=!photoBusy) {
         error?.let{Text(it,color=Clay)}
         Input("事情名称 *",title,{title=it})
         DateControl(LocalDate.parse(date),{date=it.toString()})
@@ -76,6 +78,7 @@ import java.time.*
         }
         Input("做了什么，有什么体验？（选填）",notes,{notes=it},lines=4)
         Rating("当时体验",feeling,{feeling=it})
+        PhotoAttachments("event",id,photos,{photos=it},{photoBusy=it})
         if(source!=null)TextButton({deleting=true}){Text("删除记录",color=Clay)}
     }
     if(deleting&&source!=null)ConfirmDialog("删除记录？","关联支出也会移除。如果来自计划，该计划会回到待办。",{deleting=false},{onDelete(source)})
@@ -147,7 +150,10 @@ import java.time.*
     }
 }
 
-@Composable fun CashEditor(source:CashEntry?,day:LocalDate,onDismiss:()->Unit,onSave:(CashEntry)->Unit,onDelete:(CashEntry)->Unit) {
+@Composable fun CashEditor(source:CashEntry?,day:LocalDate,onDismiss:()->Unit,onSave:(CashEntry,List<Photo>)->Unit,onDelete:(CashEntry)->Unit,sourcePhotos:List<Photo> = emptyList()) {
+    val id=rememberSaveable{source?.id ?: newId()}
+    var photos by rememberSaveable{mutableStateOf(ArrayList(sourcePhotos))}
+    var photoBusy by remember{mutableStateOf(false)}
     var title by rememberSaveable{mutableStateOf(source?.title ?: "")}
     var kind by rememberSaveable{mutableStateOf(source?.kind ?: "expense")}
     var amount by rememberSaveable{mutableStateOf(source?.let{money(if(it.kind=="expense")-it.cents else it.cents)} ?: "")}
@@ -159,13 +165,14 @@ import java.time.*
         try {
             val value=parseMoney(amount,kind=="adjustment") ?: error("请填写金额")
             val at=Time.parse(date,clock);require(at<=System.currentTimeMillis()){ "只能记录已发生的收支" }
-            val entry=CashEntry(source?.id ?: newId(),title=title.trim(),cents=if(kind=="expense")-value else value,kind=kind,occurredAt=at,createdAt=source?.createdAt ?: System.currentTimeMillis())
-            entry.validate();onSave(entry)
+            val entry=CashEntry(id,title=title.trim(),cents=if(kind=="expense")-value else value,kind=kind,occurredAt=at,createdAt=source?.createdAt ?: System.currentTimeMillis())
+            entry.validate();onSave(entry,photos)
         }catch(e:Exception){error=e.message}
-    }) {
+    },saveEnabled=!photoBusy) {
         Choices(listOf("支出","收入","余额调整"),when(kind){"expense"->"支出";"adjustment"->"余额调整";else->"收入"}){kind=when(it){"支出"->"expense";"余额调整"->"adjustment";else->"income"}}
         Input("名称 *",title,{title=it});Input(if(kind=="adjustment")"调整金额 / 元（可为负）" else "金额 / 元 *",amount,{amount=it},numeric=true)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){DateControl(LocalDate.parse(date),{date=it.toString()},Modifier.weight(1f),label="");ClockControl(clock,{clock=it},label="")}
+        PhotoAttachments("cash",id,photos,{photos=it},{photoBusy=it})
         Label("事件里已记过的支出，无需重复记账。")
         if(kind=="adjustment")Label("调整用于修正漏记等差额，不计作收入或支出，会单独显示。")
         error?.let{Text(it,color=Clay)}

@@ -152,8 +152,9 @@ data class LedgerData(
     val events: List<Event> = emptyList(), val cash: List<CashEntry> = emptyList(),
     val sleeps: List<SleepEntry> = emptyList(), val forecasts: List<Forecast> = emptyList(),
     val resolutions: List<Resolution> = emptyList(), val balances: List<BalanceAnchor> = emptyList(),
-    val checks: List<DayCheck> = emptyList(), val plans: List<Plan> = emptyList()
+    val checks: List<DayCheck> = emptyList(), val plans: List<Plan> = emptyList(), val photos: List<Photo> = emptyList()
 ) {
+    fun photosFor(type: String, id: String?) = photos.filter { it.ownerType == type && it.ownerId == id }.sortedBy { it.createdAt }
     val activePlans get() = plans.filter { it.deletedAt == null }
     val activeEvents get() = events.filter { it.deletedAt == null }
     fun latestForecast(id: String) = forecasts.filter { it.eventId == id }.maxByOrNull { it.madeAt }
@@ -162,7 +163,7 @@ data class LedgerData(
 
 @Dao
 interface LedgerDao {
-    @Query("SELECT (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM cash) + (SELECT COUNT(*) FROM sleep) + (SELECT COUNT(*) FROM forecasts) + (SELECT COUNT(*) FROM resolutions) + (SELECT COUNT(*) FROM balances) + (SELECT COUNT(*) FROM day_checks) + (SELECT COUNT(*) FROM plans)")
+    @Query("SELECT (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM cash) + (SELECT COUNT(*) FROM sleep) + (SELECT COUNT(*) FROM forecasts) + (SELECT COUNT(*) FROM resolutions) + (SELECT COUNT(*) FROM balances) + (SELECT COUNT(*) FROM day_checks) + (SELECT COUNT(*) FROM plans) + (SELECT COUNT(*) FROM photos)")
     fun changes(): Flow<Int>
     @Query("SELECT * FROM events ORDER BY startAt DESC") suspend fun events(): List<Event>
     @Query("SELECT * FROM cash ORDER BY occurredAt DESC") suspend fun cash(): List<CashEntry>
@@ -174,6 +175,10 @@ interface LedgerDao {
     @Query("SELECT * FROM plans ORDER BY createdAt, id") suspend fun plans(): List<Plan>
     @Query("DELETE FROM plans") suspend fun clearPlans()
     @Upsert suspend fun save(value: Plan)
+    @Query("SELECT * FROM photos ORDER BY createdAt, id") suspend fun photos(): List<Photo>
+    @Upsert suspend fun save(value: Photo)
+    @Query("DELETE FROM photos WHERE ownerType = :type AND ownerId = :id") suspend fun deletePhotos(type: String, id: String)
+    @Query("DELETE FROM photos") suspend fun clearPhotos()
     @Upsert suspend fun save(value: Event)
     @Upsert suspend fun save(value: CashEntry)
     @Upsert suspend fun save(value: SleepEntry)
@@ -191,13 +196,19 @@ interface LedgerDao {
     @Query("DELETE FROM resolutions") suspend fun clearResolutions()
     @Query("DELETE FROM balances") suspend fun clearBalances()
     @Query("DELETE FROM day_checks") suspend fun clearChecks()
-    @Transaction suspend fun dump() = LedgerData(events(), cash(), sleeps(), forecasts(), resolutions(), balances(), checks(), plans())
+    @Transaction suspend fun dump() = LedgerData(events(), cash(), sleeps(), forecasts(), resolutions(), balances(), checks(), plans(), photos())
 }
 
-@Database(entities = [Event::class, CashEntry::class, SleepEntry::class, Forecast::class, Resolution::class, BalanceAnchor::class, DayCheck::class, Plan::class], version = 3, exportSchema = true)
+@Database(entities = [Event::class, CashEntry::class, SleepEntry::class, Forecast::class, Resolution::class, BalanceAnchor::class, DayCheck::class, Plan::class, Photo::class], version = 4, exportSchema = true)
 abstract class LedgerDatabase : RoomDatabase() {
     abstract fun dao(): LedgerDao
     companion object {
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS photos (id TEXT NOT NULL PRIMARY KEY, ownerType TEXT NOT NULL, ownerId TEXT NOT NULL, fileName TEXT NOT NULL, mimeType TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_photos_ownerType_ownerId ON photos(ownerType, ownerId)")
+            }
+        }
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE events ADD COLUMN actualMinutes INTEGER")
@@ -224,7 +235,7 @@ abstract class LedgerDatabase : RoomDatabase() {
         }
         @Volatile private var instance: LedgerDatabase? = null
         fun get(context: Context) = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(context.applicationContext, LedgerDatabase::class.java, "daymark.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+            instance ?: Room.databaseBuilder(context.applicationContext, LedgerDatabase::class.java, "daymark.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
         }
     }
 }

@@ -92,6 +92,6 @@ import kotlin.math.*
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){Button(onBalance){Text(if(data.balances.isEmpty())"设置初始余额" else "核对余额")};OutlinedButton(onCash){Text("记一笔收支")}}
             data.balances.sortedByDescending{it.asOf}.take(5).forEach{Label("${Time.local(it.asOf)} · ¥ ${money(it.cents)}${if(it.note.isNotBlank())" · ${it.note}" else ""}")}
         } }
-        item { Label("事记 EventLog 0.2.0 · 数据保存在本机") }
+        item { Label("事记 EventLog 0.3.0 · 数据保存在本机") }
     }
 }

@@ -90,7 +90,7 @@ class PlanningPersistenceTest {
                 sql.execSQL("INSERT INTO day_checks VALUES ('2026-10-12',2)")
                 sql.version=2
             }
-            fun open()=Room.databaseBuilder(context,LedgerDatabase::class.java,name).addMigrations(LedgerDatabase.MIGRATION_2_3).build()
+            fun open()=Room.databaseBuilder(context,LedgerDatabase::class.java,name).addMigrations(LedgerDatabase.MIGRATION_2_3,LedgerDatabase.MIGRATION_3_4).build()
             val db=open();val data=try{db.dao().dump()}finally{db.close()}
             assertEquals(3,data.events.size);assertTrue(data.events.all{it.description=="原描述"&&it.experience=="原体验"&&it.startAt==at})
             assertEquals(-2,data.events.first{it.id=="done"}.feeling)
